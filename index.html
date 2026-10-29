@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prueba de Genie</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;font-size:17px;margin:0;padding:16px;background:#F4F6F8;color:#12212B}
+  h1{font-size:22px} h2{font-size:18px;margin-top:26px}
+  input,button{font-size:16px;min-height:48px;box-sizing:border-box;border-radius:12px;border:1.5px solid #8896A1;padding:0 12px;width:100%;margin:6px 0}
+  button{background:#0A6770;color:#fff;border:0;font-weight:700}
+  pre{background:#fff;border:1.5px solid #8896A1;border-radius:12px;padding:12px;white-space:pre-wrap;word-break:break-word;font-size:15px}
+</style>
+</head>
+<body>
+<h1>Prueba de Genie: voz y archivos</h1>
+
+<h2>1. Conexión</h2>
+<input id="url" placeholder="Dirección del gerente (la URL larga)">
+<input id="clave" type="password" placeholder="Clave de prueba">
+<button onclick="guardar()">Guardar en este celular</button>
+
+<h2>2. Voz</h2>
+<button id="btnVoz" onclick="toggleVoz()">Grabar</button>
+
+<h2>3. Fotos y archivos</h2>
+<input id="archivos" type="file" multiple accept="image/*,application/pdf">
+<button onclick="enviarArchivos()">Enviar a Genie</button>
+
+<h2>Reporte (puedes tomarle captura)</h2>
+<pre id="reporte"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+$("url").value = localStorage.getItem("g_url") || "";
+$("clave").value = localStorage.getItem("g_clave") || "";
+function guardar(){ localStorage.setItem("g_url",$("url").value.trim()); localStorage.setItem("g_clave",$("clave").value); log("Guardado."); }
+function log(t){ $("reporte").textContent += t + "\n"; }
+log("Dispositivo: " + navigator.userAgent);
+
+async function enviar(cuerpo){
+  const r = await fetch($("url").value.trim(), {
+    method:"POST",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body: JSON.stringify(Object.assign({clave:$("clave").value}, cuerpo))
+  });
+  return r.json();
+}
+function aBase64(buf){
+  const b = new Uint8Array(buf); let s = "";
+  for(let i=0;i<b.length;i+=0x8000) s += String.fromCharCode.apply(null, b.subarray(i,i+0x8000));
+  return btoa(s);
+}
+
+/* ---------- VOZ ---------- */
+let rec, trozos = [], flujo, t0;
+async function toggleVoz(){
+  if(rec && rec.state === "recording"){ rec.stop(); return; }
+  try{ flujo = await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ log("No se pudo abrir el micrófono: " + e.name); return; }
+  const tipos = ["audio/mp4","audio/webm;codecs=opus","audio/webm","audio/ogg"];
+  const tipo = tipos.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+  rec = tipo ? new MediaRecorder(flujo,{mimeType:tipo}) : new MediaRecorder(flujo);
+  trozos = [];
+  rec.ondataavailable = e => { if(e.data.size) trozos.push(e.data); };
+  rec.onstop = () => {
+    flujo.getTracks().forEach(t => t.stop());
+    $("btnVoz").textContent = "Grabar";
+    procesar(new Blob(trozos,{type:rec.mimeType}));
+  };
+  rec.start(); t0 = Date.now();
+  $("btnVoz").textContent = "Detener";
+}
+async function procesar(blob){
+  const seg = ((Date.now()-t0)/1000).toFixed(1);
+  log("Voz grabada en formato " + (blob.type||"desconocido") + ", " + seg + " s");
+  try{
+    const wav = await aWav(blob);
+    log("Convertida a WAV: " + Math.round(wav.byteLength/1024) + " KB. Enviando...");
+    const inicio = Date.now();
+    const r = await enviar({accion:"voz", audio:aBase64(wav)});
+    log(r.ok ? "VOZ OK en " + ((Date.now()-inicio)/1000).toFixed(1) + " s. Texto: " + r.texto : "VOZ ERROR: " + r.error);
+  }catch(e){ log("VOZ ERROR: " + e); }
+}
+async function aWav(blob){
+  const buf = await blob.arrayBuffer();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  const audio = await new Promise((ok,mal) => ctx.decodeAudioData(buf,ok,mal));
+  ctx.close();
+  const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const off = new Off(1, Math.ceil(audio.duration*16000), 16000);
+  const fuente = off.createBufferSource();
+  fuente.buffer = audio; fuente.connect(off.destination); fuente.start();
+  const listo = await new Promise(ok => { off.oncomplete = e => ok(e.renderedBuffer); off.startRendering(); });
+  const d = listo.getChannelData(0);
+  const v = new DataView(new ArrayBuffer(44 + d.length*2));
+  const esc = (o,s) => { for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+  esc(0,"RIFF"); v.setUint32(4,36+d.length*2,true); esc(8,"WAVE"); esc(12,"fmt ");
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,16000,true); v.setUint32(28,32000,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  esc(36,"data"); v.setUint32(40,d.length*2,true);
+  for(let i=0;i<d.length;i++){ const s = Math.max(-1,Math.min(1,d[i])); v.setInt16(44+i*2, s<0 ? s*0x8000 : s*0x7fff, true); }
+  return v.buffer;
+}
+
+/* ---------- ARCHIVOS ---------- */
+function reducir(file){
+  return new Promise(ok => {
+    const img = new Image();
+    img.onload = () => {
+      const esc = Math.min(1, 1280/Math.max(img.width,img.height));
+      const c = document.createElement("canvas");
+      c.width = img.width*esc; c.height = img.height*esc;
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+      URL.revokeObjectURL(img.src);
+      c.toBlob(b => ok(b), "image/jpeg", 0.8);
+    };
+    img.onerror = () => ok(null);
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function enviarArchivos(){
+  const lista = Array.from($("archivos").files);
+  if(!lista.length){ log("No elegiste archivos."); return; }
+  log("Elegiste " + lista.length + " archivo(s).");
+  const salida = [];
+  for(const f of lista){
+    let blob = f, tipo = f.type;
+    if(f.type.startsWith("image/")){ blob = await reducir(f); tipo = "image/jpeg"; }
+    if(!blob){ log(f.name + ": no se pudo leer."); continue; }
+    if(blob.size > 4*1024*1024){ log(f.name + ": muy grande para esta prueba."); continue; }
+    log(f.name + " (" + f.type + ", " + Math.round(f.size/1024) + " KB) -> enviado como " + Math.round(blob.size/1024) + " KB");
+    salida.push({nombre:f.name, tipo:tipo, datos:aBase64(await blob.arrayBuffer())});
+  }
+  if(!salida.length) return;
+  try{
+    const r = await enviar({accion:"archivos", archivos:salida});
+    log(r.ok ? "ARCHIVOS OK. Genie dice: " + r.texto : "ARCHIVOS ERROR: " + r.error);
+  }catch(e){ log("ARCHIVOS ERROR: " + e); }
+}
+</script>
+</body>
+</html>
