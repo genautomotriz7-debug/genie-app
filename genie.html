@@ -95,6 +95,7 @@ async function enviar(){
   burbuja(txt, "yo");
   const op = nuevoId();
   const espera = burbuja("Genie está pensando…", "genie");
+    setTimeout(() => { if (espera.textContent === "Genie está pensando…") espera.textContent = "Genie sigue trabajando. Si es un análisis de mercado, puede tardar un poco…"; }, 8000);
   let intentos = 0, sondeos = 0;
   while(true){
     let r;
