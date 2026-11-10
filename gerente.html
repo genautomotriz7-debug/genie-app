@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prueba del gerente</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;font-size:17px;margin:0;padding:16px;background:#F4F6F8;color:#12212B}
+  h1{font-size:22px} h2{font-size:18px;margin-top:24px}
+  input,button{font-size:16px;min-height:48px;box-sizing:border-box;border-radius:12px;border:1.5px solid #8896A1;padding:0 12px;width:100%;margin:6px 0}
+  button{background:#0A6770;color:#fff;border:0;font-weight:700}
+  button.sec{background:#fff;color:#08555C;border:1.5px solid #0A6770}
+  .caja{background:#fff;border:1.5px solid #8896A1;border-radius:12px;padding:12px;margin:8px 0;overflow-x:auto}
+  table{border-collapse:collapse;font-size:14px} td,th{border:1px solid #8896A1;padding:4px 8px;white-space:nowrap;text-align:left}
+  .fila{display:flex;gap:8px}
+  .oculto{display:none}
+</style>
+</head>
+<body>
+<h1>Prueba del gerente</h1>
+
+<h2>1. Entrar</h2>
+<input id="url" placeholder="Dirección del gerente (la URL larga)">
+<input id="token" placeholder="Código del enlace personal" autocomplete="off">
+<input id="pin" type="password" inputmode="numeric" placeholder="PIN" autocomplete="off">
+<button onclick="entrar()">Entrar</button>
+
+<div id="panel" class="oculto">
+  <h2 id="quien"></h2>
+  <div class="fila">
+    <button onclick="ver('ver_autos')">Ver autos</button>
+    <button onclick="ver('ver_bolsas')">Ver bolsas</button>
+  </div>
+  <button class="sec" onclick="salir()">Salir</button>
+
+  <h2>2. Registrar un gasto</h2>
+  <input id="codigo" placeholder="Código del auto (por ejemplo A-0003)">
+  <input id="concepto" placeholder="Concepto (termina con (PRUEBA))">
+  <input id="monto" inputmode="decimal" placeholder="Monto">
+  <button onclick="preparar(true)">Preparar gasto</button>
+  <button class="sec" onclick="preparar(false)">Repetir el mismo envío (prueba de duplicado)</button>
+</div>
+
+<div id="tarjeta" class="caja oculto"></div>
+<div id="salida" class="caja">Aquí aparecerán los resultados.</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let sesion = localStorage.getItem("g3_ses") || "";
+let ultimaOp = "";
+$("url").value = localStorage.getItem("g_url") || "";
+const h = new URLSearchParams(location.hash.slice(1));
+if (h.get("t")) $("token").value = h.get("t");
+if (sesion) $("panel").classList.remove("oculto");
+
+async function llamar(cuerpo){
+  localStorage.setItem("g_url", $("url").value.trim());
+  const r = await fetch($("url").value.trim(), {
+    method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body: JSON.stringify(cuerpo)
+  });
+  return r.json();
+}
+function texto(t){ $("salida").textContent = t; }
+function tabla(lista){
+  if(!lista.length) return document.createTextNode("(sin resultados)");
+  const t = document.createElement("table");
+  const cols = Object.keys(lista[0]);
+  const enc = t.insertRow();
+  cols.forEach(c => { const th = document.createElement("th"); th.textContent = c; enc.appendChild(th); });
+  lista.forEach(f => { const tr = t.insertRow(); cols.forEach(c => { tr.insertCell().textContent = f[c]; }); });
+  return t;
+}
+function mostrar(r){
+  const s = $("salida"); s.innerHTML = "";
+  if(r.sesion_vencida){ sesion=""; localStorage.removeItem("g3_ses"); $("panel").classList.add("oculto"); }
+  if(!r.ok){ s.textContent = "ERROR: " + r.error; return; }
+  if(r.autos){ s.appendChild(tabla(r.autos)); return; }
+  if(r.bolsas){ s.appendChild(tabla(r.bolsas)); return; }
+  if(r.tarjeta){ pintar(r.tarjeta); s.textContent = "Revisa la tarjeta de arriba."; return; }
+  s.textContent = r.mensaje || "Listo.";
+}
+async function entrar(){
+  texto("Entrando...");
+  try{
+    const r = await llamar({accion:"login", token:$("token").value.trim(), pin:$("pin").value.trim()});
+    if(r.ok){
+      sesion = r.sesion; localStorage.setItem("g3_ses", sesion);
+      $("quien").textContent = "Hola, " + r.usuario.nombre + " (" + r.usuario.rol + ")";
+      $("panel").classList.remove("oculto"); $("pin").value = "";
+      history.replaceState(null, "", location.pathname);
+      texto("Herramientas permitidas: " + r.usuario.herramientas.join(", "));
+    } else mostrar(r);
+  }catch(e){ texto("ERROR: " + e); }
+}
+function salir(){ sesion=""; localStorage.removeItem("g3_ses"); $("panel").classList.add("oculto"); $("tarjeta").classList.add("oculto"); texto("Saliste."); }
+async function ver(accion){
+  texto("Consultando...");
+  try{ mostrar(await llamar({accion, sesion})); }catch(e){ texto("ERROR: " + e); }
+}
+async function preparar(nueva){
+  if(nueva || !ultimaOp) ultimaOp = (crypto.randomUUID ? crypto.randomUUID() : Date.now()+"-"+Math.random());
+  texto("Preparando...");
+  try{
+    mostrar(await llamar({accion:"preparar_gasto", sesion, id_operacion:ultimaOp,
+      codigo:$("codigo").value, concepto:$("concepto").value, monto:$("monto").value.replace(",",".")}));
+  }catch(e){ texto("ERROR: " + e); }
+}
+function pintar(t){
+  const c = $("tarjeta"); c.innerHTML = ""; c.classList.remove("oculto");
+  const add = (txt, neg) => { const d = document.createElement("div"); d.textContent = txt; if(neg) d.style.fontWeight = "700"; c.appendChild(d); };
+  add(t.titulo, true);
+  t.filas.forEach(f => add(f[0] + ": " + f[1]));
+  if(t.aviso) add(t.aviso, true);
+  add(t.nota + ". " + t.porque);
+  if(t.estado === "pendiente"){
+    const fila = document.createElement("div"); fila.className = "fila";
+    const si = document.createElement("button"); si.textContent = "Sí, anótalo"; si.onclick = () => decidir(t.id_accion, "si");
+    const no = document.createElement("button"); no.textContent = "No"; no.className = "sec"; no.onclick = () => decidir(t.id_accion, "no");
+    fila.appendChild(si); fila.appendChild(no); c.appendChild(fila);
+  } else add("Estado de esta acción: " + t.estado, true);
+}
+async function decidir(id, decision){
+  $("tarjeta").classList.add("oculto"); texto("Un momento...");
+  try{ mostrar(await llamar({accion:"confirmar_accion", sesion, id_accion:id, decision})); }catch(e){ texto("ERROR: " + e); }
+}
+</script>
+</body>
+</html>
