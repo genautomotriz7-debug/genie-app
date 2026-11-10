@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Genie (prueba de chat)</title>
+<style>
+  html,body{height:100%}
+  body{margin:0;font-family:system-ui,-apple-system,sans-serif;font-size:17px;background:#F4F6F8;color:#12212B;display:flex;flex-direction:column}
+  header{padding:12px 16px;background:#fff;border-bottom:1.5px solid #8896A1;font-weight:700;font-size:20px}
+  #entrada{padding:16px}
+  input,button{font-size:16px;min-height:48px;box-sizing:border-box;border-radius:12px;border:1.5px solid #8896A1;padding:0 12px;width:100%;margin:6px 0}
+  button{background:#0A6770;color:#fff;border:0;font-weight:700}
+  button.sec{background:#fff;color:#08555C;border:1.5px solid #0A6770}
+  #chat{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+  .b{max-width:85%;padding:10px 12px;border-radius:14px;white-space:pre-wrap;word-break:break-word;border:1.5px solid #8896A1;background:#fff}
+  .yo{align-self:flex-end;background:#0A6770;color:#fff;border-color:#0A6770}
+  .tarjeta{align-self:stretch;background:#fff;border:1.5px solid #8896A1;border-radius:14px;padding:12px}
+  .fila{display:flex;gap:8px;margin-top:8px}
+  #barra{display:flex;gap:8px;padding:10px 12px;background:#fff;border-top:1.5px solid #8896A1}
+  #barra input{margin:0;flex:1} #barra button{margin:0;width:auto;padding:0 18px}
+  .oculto{display:none!important}
+</style>
+</head>
+<body>
+<header>Genie <span id="quien" style="font-weight:400;font-size:15px"></span>
+  <button class="sec" style="width:auto;min-height:36px;margin:0;float:right" onclick="salir()">Salir</button></header>
+
+<div id="entrada">
+  <input id="url" placeholder="Dirección del gerente (la URL larga)">
+  <input id="token" placeholder="Código del enlace personal" autocomplete="off">
+  <input id="pin" type="password" inputmode="numeric" placeholder="PIN" autocomplete="off">
+  <button onclick="entrar()">Entrar</button>
+  <div id="aviso"></div>
+</div>
+<div id="chat" class="oculto"></div>
+<div id="barra" class="oculto">
+  <input id="texto" placeholder="Escribe a Genie" autocomplete="off">
+  <button onclick="enviar()">Enviar</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let sesion = localStorage.getItem("g3_ses") || "";
+$("url").value = localStorage.getItem("g_url") || "";
+const hh = new URLSearchParams(location.hash.slice(1));
+if (hh.get("t")) $("token").value = hh.get("t");
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+const nuevoId = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random());
+
+async function llamar(cuerpo){
+  localStorage.setItem("g_url", $("url").value.trim());
+  const r = await fetch($("url").value.trim(), {
+    method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body: JSON.stringify(cuerpo)
+  });
+  return r.json();
+}
+function bajar(){ $("chat").scrollTop = $("chat").scrollHeight; }
+function burbuja(txt, clase){
+  const d = document.createElement("div"); d.className = "b " + clase; d.textContent = txt;
+  $("chat").appendChild(d); bajar(); return d;
+}
+function abrirChat(nombre, rol){
+  $("entrada").classList.add("oculto"); $("chat").classList.remove("oculto"); $("barra").classList.remove("oculto");
+  $("quien").textContent = nombre + " · " + rol;
+}
+function verLogin(){
+  $("entrada").classList.remove("oculto"); $("chat").classList.add("oculto"); $("barra").classList.add("oculto");
+}
+async function inicio(){
+  if(!sesion) return;
+  try{
+    const r = await llamar({accion:"yo", sesion});
+    if(r.ok) abrirChat(r.usuario.nombre, r.usuario.rol); else { sesion = ""; localStorage.removeItem("g3_ses"); }
+  }catch(e){}
+}
+inicio();
+async function entrar(){
+  $("aviso").textContent = "Entrando...";
+  try{
+    const r = await llamar({accion:"login", token:$("token").value.trim(), pin:$("pin").value.trim()});
+    if(r.ok){
+      sesion = r.sesion; localStorage.setItem("g3_ses", sesion); $("pin").value = "";
+      history.replaceState(null, "", location.pathname);
+      abrirChat(r.usuario.nombre, r.usuario.rol); $("aviso").textContent = "";
+    } else $("aviso").textContent = r.error;
+  }catch(e){ $("aviso").textContent = "ERROR: " + e; }
+}
+function salir(){ sesion = ""; localStorage.removeItem("g3_ses"); location.reload(); }
+
+async function enviar(){
+  const txt = $("texto").value.trim();
+  if(!txt) return;
+  $("texto").value = "";
+  burbuja(txt, "yo");
+  const op = nuevoId();
+  const espera = burbuja("Genie está pensando…", "genie");
+  let intentos = 0, sondeos = 0;
+  while(true){
+    let r;
+    try{
+      r = await llamar({accion:"chat", sesion, id_operacion:op, texto:txt});
+    }catch(e){
+      if(intentos < 3){ intentos++; espera.textContent = "Sin conexión. Reintentando en 5 segundos… (" + intentos + " de 3)"; await esperar(5000); continue; }
+      espera.textContent = "No pude conectar. Revisa tu internet y vuelve a enviar."; return;
+    }
+    if(r.sesion_vencida){ espera.textContent = r.error; sesion = ""; localStorage.removeItem("g3_ses"); verLogin(); return; }
+    if(r.procesando && sondeos < 6){ sondeos++; espera.textContent = "Genie sigue trabajando en tu mensaje…"; await esperar(5000); continue; }
+    if(!r.ok && r.reintentable && intentos < 3){ intentos++; espera.textContent = "Genie tuvo un problema. Reintentando en 5 segundos… (" + intentos + " de 3)"; await esperar(5000); continue; }
+    if(!r.ok){ espera.textContent = "ERROR: " + r.error; return; }
+    espera.textContent = r.texto;
+    (r.tarjetas || []).forEach(tarjeta);
+    bajar();
+    return;
+  }
+}
+function tarjeta(t){
+  const c = document.createElement("div"); c.className = "tarjeta";
+  const add = (txt, neg) => { const d = document.createElement("div"); d.textContent = txt; if(neg) d.style.fontWeight = "700"; c.appendChild(d); };
+  add(t.titulo, true);
+  t.filas.forEach(f => add(f[0] + ": " + f[1]));
+  if(t.aviso) add(t.aviso, true);
+  add(t.nota + ". " + t.porque);
+  if(t.estado === "pendiente"){
+    const fila = document.createElement("div"); fila.className = "fila";
+    const si = document.createElement("button"); si.textContent = "Sí, anótalo";
+    const no = document.createElement("button"); no.textContent = "No"; no.className = "sec";
+    si.onclick = () => decidir(t.id_accion, "si", c); no.onclick = () => decidir(t.id_accion, "no", c);
+    fila.appendChild(si); fila.appendChild(no); c.appendChild(fila);
+  } else add("Estado: " + t.estado, true);
+  $("chat").appendChild(c); bajar();
+}
+async function decidir(id, decision, c){
+  c.querySelectorAll("button").forEach(b => b.disabled = true);
+  try{
+    const r = await llamar({accion:"confirmar_accion", sesion, id_accion:id, decision});
+    const f = c.querySelector(".fila"); if(r.ok && f) f.remove();
+    const t = document.createElement("div"); t.style.fontWeight = "700"; t.style.marginTop = "8px";
+    t.textContent = r.ok ? r.mensaje : "ERROR: " + r.error; c.appendChild(t);
+    if(!r.ok) c.querySelectorAll("button").forEach(b => b.disabled = false);
+  }catch(e){
+    c.querySelectorAll("button").forEach(b => b.disabled = false);
+    const t = document.createElement("div"); t.textContent = "Sin conexión. Vuelve a tocar el botón."; c.appendChild(t);
+  }
+  bajar();
+}
+$("texto").addEventListener("keydown", e => { if(e.key === "Enter") enviar(); });
+</script>
+</body>
+</html>
